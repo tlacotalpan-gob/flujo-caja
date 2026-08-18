@@ -3,7 +3,7 @@
 // No necesitas editar este archivo. Toda la configuración vive en config.js.
 // ============================================================
 
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let CAJAS = [];       // catálogo de cajas cargado de Supabase
 let CATEGORIAS = [];  // catálogo de categorías cargado de Supabase
@@ -19,7 +19,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   const password = document.getElementById('login-password').value;
   const errEl = document.getElementById('login-error');
   errEl.textContent = '';
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await sb.auth.signInWithPassword({ email, password });
   if (error) {
     errEl.textContent = 'No se pudo entrar: revisa tu correo y contraseña.';
     return;
@@ -28,20 +28,20 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
-  await supabase.auth.signOut();
+  await sb.auth.signOut();
   document.getElementById('app-view').classList.add('hide');
   document.getElementById('login-view').classList.remove('hide');
 });
 
 async function checkSession() {
-  const { data } = await supabase.auth.getSession();
+  const { data } = await sb.auth.getSession();
   if (data.session) {
     await startApp();
   }
 }
 
 async function startApp() {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await sb.auth.getUser();
   document.getElementById('user-email').textContent = user ? user.email : '';
   document.getElementById('login-view').classList.add('hide');
   document.getElementById('app-view').classList.remove('hide');
@@ -56,9 +56,9 @@ async function startApp() {
 // ---------- Catálogos ----------
 
 async function loadCatalogos() {
-  const { data: cajas } = await supabase.from('cajas').select('*').eq('activa', true).order('nombre');
+  const { data: cajas } = await sb.from('cajas').select('*').eq('activa', true).order('nombre');
   CAJAS = cajas || [];
-  const { data: categorias } = await supabase.from('categorias').select('*').eq('activa', true).order('nombre');
+  const { data: categorias } = await sb.from('categorias').select('*').eq('activa', true).order('nombre');
   CATEGORIAS = categorias || [];
 
   const cajaSelects = ['mov-caja', 'tr-origen', 'tr-destino'];
@@ -138,7 +138,7 @@ document.getElementById('mov-form').addEventListener('submit', async (e) => {
     return;
   }
 
-  const { error } = await supabase.from('movimientos').insert(payload);
+  const { error } = await sb.from('movimientos').insert(payload);
   if (error) {
     msgEl.textContent = 'No se pudo guardar: ' + error.message;
     return;
@@ -187,7 +187,7 @@ document.getElementById('tr-form').addEventListener('submit', async (e) => {
     motivo: document.getElementById('tr-motivo').value || null,
   };
 
-  const { error } = await supabase.from('transferencias').insert(payload);
+  const { error } = await sb.from('transferencias').insert(payload);
   if (error) {
     msgEl.textContent = 'No se pudo guardar: ' + error.message;
     return;
@@ -207,7 +207,7 @@ document.getElementById('tr-form').addEventListener('submit', async (e) => {
 // ---------- Saldos (barra superior) ----------
 
 async function loadSaldos() {
-  const { data: movs } = await supabase.from('movimientos').select('caja_id, tipo, monto');
+  const { data: movs } = await sb.from('movimientos').select('caja_id, tipo, monto');
   const saldoPorCaja = {};
   CAJAS.forEach(c => { saldoPorCaja[c.id] = c.saldo_inicial || 0; });
   (movs || []).forEach(m => {
@@ -246,7 +246,7 @@ function rangoDeFechas(periodo) {
 
 async function loadFlujo() {
   const { desde, hasta } = rangoDeFechas(PERIODO_FILTRO);
-  let query = supabase.from('movimientos')
+  let query = sb.from('movimientos')
     .select('tipo, monto, categoria_id, caja_id, es_transferencia')
     .eq('es_transferencia', false);
 
