@@ -9,5 +9,5 @@
 //    NUNCA uses aquí la llave "service_role", esa sí es secreta.)
 // ============================================================
 
-const SUPABASE_URL = "https://osljlemqvlrpnzpdygpl.supabase.co/rest/v1/";
+const SUPABASE_URL = "https://osljlemqvlrpnzpdygpl.supabase.co/";
 const SUPABASE_ANON_KEY = "sb_publishable_Z8ueHQ9OQaOBP7W79cxlnQ_o8kXtzBF";
