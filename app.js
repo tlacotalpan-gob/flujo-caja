@@ -8,8 +8,6 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let CAJAS = [];       // catálogo de cajas cargado de Supabase
 let CATEGORIAS = [];  // catálogo de categorías cargado de Supabase
 let TIPO_ACTUAL = 'Entrada';
-let CAJA_FILTRO = '';
-let PERIODO_FILTRO = 'mes';
 let MOVLIST_PERIODO = 'mes';
 let MOVLIST_TIPO = '';
 let MOVLIST_CAJA = '';
@@ -71,7 +69,6 @@ async function startApp() {
   setDefaultDates();
   setTipo('Entrada');
   await loadSaldos();
-  await loadFlujo();
 }
 
 // ---------- Catálogos ----------
@@ -89,28 +86,6 @@ async function loadCatalogos() {
   });
 
   renderCategoriaSelect();
-
-  // chips de filtro por caja en pantalla Flujo
-  const cajaFiltersEl = document.getElementById('flujo-caja-filters');
-  cajaFiltersEl.innerHTML = '<div class="chip active" data-caja="">Ambas cajas</div>' +
-    CAJAS.map(c => `<div class="chip" data-caja="${c.id}">${c.nombre}</div>`).join('');
-  cajaFiltersEl.querySelectorAll('.chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      cajaFiltersEl.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-      CAJA_FILTRO = chip.dataset.caja;
-      loadFlujo();
-    });
-  });
-
-  document.getElementById('flujo-periodo-filters').querySelectorAll('.chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      document.querySelectorAll('#flujo-periodo-filters .chip').forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-      PERIODO_FILTRO = chip.dataset.periodo;
-      loadFlujo();
-    });
-  });
 
   // filtros de la pantalla Movimientos
   const movCajaFiltersEl = document.getElementById('mov-list-caja-filters');
@@ -270,7 +245,6 @@ document.getElementById('mov-form').addEventListener('submit', async (e) => {
   document.getElementById('mov-monto').focus();
 
   await loadSaldos();
-  await loadFlujo();
 });
 
 // ---------- Captura: guardar transferencia ----------
@@ -316,7 +290,6 @@ document.getElementById('tr-form').addEventListener('submit', async (e) => {
   document.getElementById('tr-motivo').value = '';
 
   await loadSaldos();
-  await loadFlujo();
 });
 
 // ---------- Saldos (barra superior) ----------
@@ -343,7 +316,7 @@ async function loadSaldos() {
   });
 }
 
-// ---------- Pantalla Flujo ----------
+// ---------- Utilidades de rango de fechas (usadas por Movimientos) ----------
 
 function rangoDeFechas(periodo) {
   const hoy = new Date();
@@ -357,44 +330,6 @@ function rangoDeFechas(periodo) {
   const desde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
   const hasta = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
   return { desde: isoDate(desde), hasta: isoDate(hasta) };
-}
-
-async function loadFlujo() {
-  const { desde, hasta } = rangoDeFechas(PERIODO_FILTRO);
-  let query = sb.from('movimientos')
-    .select('tipo, monto, categoria_id, caja_id, es_transferencia')
-    .eq('es_transferencia', false);
-
-  if (desde) query = query.gte('fecha', desde);
-  if (hasta) query = query.lte('fecha', hasta);
-  if (CAJA_FILTRO) query = query.eq('caja_id', CAJA_FILTRO);
-
-  const { data: movs, error } = await query;
-  if (error) { console.error(error); return; }
-
-  let totalIn = 0, totalOut = 0;
-  const inPorCat = {}, outPorCat = {};
-  (movs || []).forEach(m => {
-    const monto = Number(m.monto);
-    const catNombre = categoriaNombre(m.categoria_id);
-    if (m.tipo === 'Entrada') {
-      totalIn += monto;
-      inPorCat[catNombre] = (inPorCat[catNombre] || 0) + monto;
-    } else {
-      totalOut += monto;
-      outPorCat[catNombre] = (outPorCat[catNombre] || 0) + monto;
-    }
-  });
-
-  document.getElementById('flujo-in').textContent = fmtMoney(totalIn);
-  document.getElementById('flujo-out').textContent = fmtMoney(totalOut);
-  const neto = totalIn - totalOut;
-  const netoEl = document.getElementById('flujo-neto');
-  netoEl.textContent = (neto >= 0 ? '+' : '') + fmtMoney(neto);
-  netoEl.style.color = neto >= 0 ? 'var(--good)' : 'var(--critical)';
-
-  renderRanking('rank-in', inPorCat, 'var(--series-1)');
-  renderRanking('rank-out', outPorCat, 'var(--series-2)');
 }
 
 function renderRanking(elId, porCategoria, color) {
@@ -792,7 +727,6 @@ async function guardarEdicionMovimiento(id) {
   showToast('✓ Movimiento actualizado');
   await loadMovimientosList();
   await loadSaldos();
-  await loadFlujo();
 }
 
 async function eliminarMovimiento(id) {
@@ -802,7 +736,6 @@ async function eliminarMovimiento(id) {
   showToast('✓ Movimiento eliminado');
   await loadMovimientosList();
   await loadSaldos();
-  await loadFlujo();
 }
 
 document.getElementById('mov-list-buscar').addEventListener('input', () => {
@@ -811,8 +744,8 @@ document.getElementById('mov-list-buscar').addEventListener('input', () => {
 });
 
 // ---------- Utilidad (dashboard de Ingresos - Egresos por categoría) ----------
-// Usa exactamente los mismos movimientos y categorías que Flujo; no se
-// duplica ninguna fuente de datos, solo se agrega de otra forma.
+// Usa exactamente los mismos movimientos y categorías capturados en la app;
+// no se duplica ninguna fuente de datos, solo se agrega de otra forma.
 
 function rangoDeFechasUtilidad(periodo) {
   const hoy = new Date();
@@ -825,11 +758,18 @@ function rangoDeFechasUtilidad(periodo) {
     const dias = Math.round((hasta - desde) / 86400000) + 1;
     prevHasta = new Date(desde.getTime() - 86400000);
     prevDesde = new Date(prevHasta.getTime() - (dias - 1) * 86400000);
-  } else if (periodo === 'hoy') {
-    desde = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-    hasta = desde;
-    prevDesde = new Date(desde.getTime() - 86400000);
-    prevHasta = prevDesde;
+  } else if (periodo === 'todo') {
+    desde = new Date(2000, 0, 1);
+    hasta = hoy;
+    // sin periodo anterior que tenga sentido para "todo el tiempo":
+    // se deja un rango vacío para que la comparación se oculte sola.
+    prevDesde = new Date(1999, 0, 1);
+    prevHasta = new Date(1999, 0, 1);
+  } else if (periodo === 'dos_meses') {
+    desde = new Date(hoy.getFullYear(), hoy.getMonth() - 2, 1);
+    hasta = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 0);
+    prevDesde = new Date(hoy.getFullYear(), hoy.getMonth() - 3, 1);
+    prevHasta = new Date(hoy.getFullYear(), hoy.getMonth() - 2, 0);
   } else if (periodo === 'semana') {
     const diaSemana = (hoy.getDay() + 6) % 7; // 0 = lunes
     desde = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - diaSemana);
@@ -1092,7 +1032,6 @@ function showScreen(name, btn) {
   document.getElementById('s-' + name).classList.add('active');
   document.querySelectorAll('.navbtn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  if (name === 'flujo') loadFlujo();
   if (name === 'proyeccion') loadProyeccion();
   if (name === 'movimientos') loadMovimientosList();
   if (name === 'utilidad') loadUtilidad();
