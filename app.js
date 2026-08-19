@@ -67,9 +67,7 @@ async function loadCatalogos() {
     el.innerHTML = CAJAS.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
   });
 
-  const catSelect = document.getElementById('mov-categoria');
-  catSelect.innerHTML = '<option value="">(sin categoría)</option>' +
-    CATEGORIAS.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
+  renderCategoriaSelect();
 
   // chips de filtro por caja en pantalla Flujo
   const cajaFiltersEl = document.getElementById('flujo-caja-filters');
@@ -113,7 +111,59 @@ function setTipo(tipo) {
   TIPO_ACTUAL = tipo;
   document.getElementById('btn-entrada').classList.toggle('active-in', tipo === 'Entrada');
   document.getElementById('btn-salida').classList.toggle('active-out', tipo === 'Salida');
+  renderCategoriaSelect();
 }
+
+// ---------- Categoría: filtrar por tipo (Entrada/Salida) + alta rápida ----------
+
+function renderCategoriaSelect() {
+  const catSelect = document.getElementById('mov-categoria');
+  const valorPrevio = catSelect.value;
+  const tipoCatalogo = TIPO_ACTUAL === 'Entrada' ? 'Ingreso' : 'Egreso';
+  const opciones = CATEGORIAS.filter(c => c.tipo === tipoCatalogo || c.tipo === 'Ambos');
+  catSelect.innerHTML = '<option value="">(sin categoría)</option>' +
+    opciones.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
+  // si la categoría que estaba elegida sigue siendo válida para este tipo, la conservamos
+  if (opciones.some(c => c.id === valorPrevio)) catSelect.value = valorPrevio;
+}
+
+function toggleNuevaCategoria(forzarCerrado) {
+  const box = document.getElementById('nueva-categoria-box');
+  const abrir = forzarCerrado === true ? false : box.classList.contains('hide');
+  box.classList.toggle('hide', !abrir);
+  document.getElementById('nueva-categoria-msg').textContent = '';
+  document.getElementById('nueva-categoria-nombre').value = '';
+  document.getElementById('nueva-categoria-ambos').checked = false;
+  if (abrir) {
+    document.getElementById('nueva-categoria-opuesto').textContent = TIPO_ACTUAL === 'Entrada' ? 'salidas' : 'entradas';
+    document.getElementById('nueva-categoria-nombre').focus();
+  }
+}
+
+document.getElementById('btn-nueva-categoria').addEventListener('click', () => toggleNuevaCategoria());
+document.getElementById('btn-cancelar-categoria').addEventListener('click', () => toggleNuevaCategoria(true));
+
+document.getElementById('btn-guardar-categoria').addEventListener('click', async () => {
+  const nombre = document.getElementById('nueva-categoria-nombre').value.trim();
+  const msgEl = document.getElementById('nueva-categoria-msg');
+  msgEl.textContent = '';
+  if (!nombre) {
+    msgEl.textContent = 'Escribe un nombre para la categoría.';
+    return;
+  }
+  const ambos = document.getElementById('nueva-categoria-ambos').checked;
+  const tipo = ambos ? 'Ambos' : (TIPO_ACTUAL === 'Entrada' ? 'Ingreso' : 'Egreso');
+  const { data, error } = await sb.from('categorias').insert({ nombre, tipo }).select().single();
+  if (error) {
+    msgEl.textContent = 'No se pudo guardar: ' + error.message;
+    return;
+  }
+  CATEGORIAS.push(data);
+  CATEGORIAS.sort((a, b) => a.nombre.localeCompare(b.nombre));
+  renderCategoriaSelect();
+  document.getElementById('mov-categoria').value = data.id;
+  toggleNuevaCategoria(true);
+});
 
 // ---------- Captura: guardar movimiento ----------
 
