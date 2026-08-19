@@ -364,7 +364,7 @@ function renderCobroCategoriaSelect() {
 }
 
 function proyectarRecurrente(movs) {
-  // movs: lista ordenada por fecha ascendente de {fecha, monto}
+  // movs: lista ordenada por fecha ascendente de {fecha, monto, caja_id}
   if (!movs || movs.length === 0) return null;
   const fechas = movs.map(m => new Date(m.fecha + 'T00:00:00'));
   const montos = movs.map(m => Number(m.monto));
@@ -379,7 +379,8 @@ function proyectarRecurrente(movs) {
 
   return {
     proximaFecha: new Date(ultimaFecha.getTime() + intervaloProm * 86400000),
-    montoEsperado: montoProm,
+    montoEsperado: Math.round(montoProm * 100) / 100,
+    cajaId: movs[movs.length - 1].caja_id,
   };
 }
 
@@ -391,16 +392,14 @@ async function loadProyeccion() {
   let saldoActual = 0;
   CAJAS.forEach(c => { saldoActual += Number(c.saldo_inicial) || 0; });
   (movs || []).forEach(m => { saldoActual += (m.tipo === 'Entrada' ? 1 : -1) * Number(m.monto); });
+  document.getElementById('proy-saldo-actual').textContent = fmtMoney(saldoActual);
 
-  const hoy = new Date();
-  const en30dias = new Date(hoy.getTime() + 30 * 86400000);
-
-  // Recurrentes: entradas de categoría "Arrendamiento", agrupadas por Concepto (Retro, Compactador...)
+  // Predicciones de arrendamientos recurrentes (Retro, Compactador...), a partir del historial
   const catArrendamiento = CATEGORIAS.find(c => c.nombre === 'Arrendamiento');
-  let recurrentes = [];
+  let predicciones = [];
   if (catArrendamiento) {
     const { data: movsArr } = await sb.from('movimientos')
-      .select('fecha, monto, concepto')
+      .select('fecha, monto, concepto, caja_id')
       .eq('categoria_id', catArrendamiento.id)
       .eq('tipo', 'Entrada')
       .eq('es_transferencia', false)
@@ -412,31 +411,55 @@ async function loadProyeccion() {
       (porConcepto[key] = porConcepto[key] || []).push(m);
     });
 
-    recurrentes = Object.entries(porConcepto)
+    predicciones = Object.entries(porConcepto)
       .map(([concepto, lista]) => ({ concepto, ...proyectarRecurrente(lista) }))
-      .filter(r => r.proximaFecha);
+      .filter(p => p.proximaFecha);
   }
-  renderRecurrentes(recurrentes);
 
-  // Cobros pendientes de reintegro (capturados a mano)
-  const { data: pendientes } = await sb.from('cobros_pendientes')
+  // Cobros pendientes ya guardados (manuales + recurrentes ya generados antes)
+  const { data: pendientesData } = await sb.from('cobros_pendientes')
     .select('*')
-    .eq('estado', 'Pendiente')
-    .order('fecha_esperada', { ascending: true, nullsFirst: false });
-  renderPendientes(pendientes || []);
+    .eq('estado', 'Pendiente');
+  const pendientes = pendientesData || [];
 
-  const cobrosRecurrentesEn30 = recurrentes
-    .filter(r => r.proximaFecha <= en30dias)
-    .reduce((sum, r) => sum + r.montoEsperado, 0);
-  const cobrosPendientesEn30 = (pendientes || [])
+  // Si hay una predicción recurrente sin fila pendiente todavía, la creamos
+  // (así queda guardada y editable, en vez de recalcularse cada vez)
+  const faltantes = predicciones.filter(pred =>
+    !pendientes.some(p => p.origen === 'Recurrente' && p.concepto_recurrente === pred.concepto)
+  );
+  if (faltantes.length > 0 && catArrendamiento) {
+    const nuevos = faltantes.map(pred => ({
+      descripcion: pred.concepto,
+      caja_id: pred.cajaId,
+      categoria_id: catArrendamiento.id,
+      monto_esperado: pred.montoEsperado,
+      fecha_esperada: isoDate(pred.proximaFecha),
+      origen: 'Recurrente',
+      concepto_recurrente: pred.concepto,
+    }));
+    const { data: insertados, error: errIns } = await sb.from('cobros_pendientes').insert(nuevos).select();
+    if (!errIns && insertados) pendientes.push(...insertados);
+  }
+
+  pendientes.sort((a, b) => {
+    const fa = a.fecha_esperada ? new Date(a.fecha_esperada) : new Date('9999-12-31');
+    const fb = b.fecha_esperada ? new Date(b.fecha_esperada) : new Date('9999-12-31');
+    return fa - fb;
+  });
+
+  renderRecurrentes(pendientes.filter(p => p.origen === 'Recurrente'));
+  renderPendientes(pendientes.filter(p => p.origen !== 'Recurrente'));
+
+  const hoy = new Date();
+  const en30dias = new Date(hoy.getTime() + 30 * 86400000);
+  const cobrosEsperados30 = pendientes
     .filter(p => !p.fecha_esperada || new Date(p.fecha_esperada + 'T00:00:00') <= en30dias)
     .reduce((sum, p) => sum + Number(p.monto_esperado), 0);
-  const totalPendientes = (pendientes || []).reduce((sum, p) => sum + Number(p.monto_esperado), 0);
+  const totalPendientes = pendientes.reduce((sum, p) => sum + Number(p.monto_esperado), 0);
 
-  document.getElementById('proy-saldo-actual').textContent = fmtMoney(saldoActual);
-  document.getElementById('proy-cobros-esperados').textContent = fmtMoney(cobrosRecurrentesEn30 + cobrosPendientesEn30);
+  document.getElementById('proy-cobros-esperados').textContent = fmtMoney(cobrosEsperados30);
   document.getElementById('proy-cuentas-cobrar').textContent = fmtMoney(totalPendientes);
-  document.getElementById('proy-30').textContent = fmtMoney(saldoActual + cobrosRecurrentesEn30 + cobrosPendientesEn30);
+  document.getElementById('proy-30').textContent = fmtMoney(saldoActual + cobrosEsperados30);
 }
 
 function fmtFecha(d) {
@@ -444,31 +467,9 @@ function fmtFecha(d) {
   return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
 }
 
-function renderRecurrentes(recurrentes) {
-  const el = document.getElementById('proy-recurrentes');
-  if (recurrentes.length === 0) {
-    el.innerHTML = '<div class="empty-note">Todavía no hay suficiente historial para predecir cobros recurrentes.</div>';
-    return;
-  }
-  el.innerHTML = recurrentes
-    .sort((a, b) => a.proximaFecha - b.proximaFecha)
-    .map(r => `
-      <div class="recur-row">
-        <div>
-          <div class="nombre">${r.concepto}</div>
-          <div class="cuando">Próximo esperado: ${fmtFecha(r.proximaFecha)}</div>
-        </div>
-        <div class="monto">${fmtMoney(r.montoEsperado)}</div>
-      </div>`).join('');
-}
-
-function renderPendientes(pendientes) {
-  const el = document.getElementById('proy-pendientes');
-  if (pendientes.length === 0) {
-    el.innerHTML = '<div class="empty-note">No tienes cobros pendientes capturados.</div>';
-    return;
-  }
-  el.innerHTML = pendientes.map(p => `
+function filaCobroHtml(p) {
+  const mostrarCancelar = p.origen !== 'Recurrente';
+  return `
     <div class="cobro-row" data-id="${p.id}">
       <div class="top">
         <div>
@@ -478,19 +479,57 @@ function renderPendientes(pendientes) {
         <div class="monto">${fmtMoney(p.monto_esperado)}</div>
       </div>
       <div class="acciones">
+        <button type="button" class="link-btn" onclick="mostrarEditarCobro('${p.id}')">Editar</button>
         <button type="button" class="link-btn confirmar" onclick="mostrarConfirmarCobro('${p.id}')">Marcar cobrado</button>
-        <button type="button" class="link-btn cancelar" onclick="cancelarCobro('${p.id}')">Cancelar</button>
+        ${mostrarCancelar ? `<button type="button" class="link-btn cancelar" onclick="cancelarCobro('${p.id}')">Cancelar</button>` : ''}
+      </div>
+      <div class="confirmar-box hide" id="editar-box-${p.id}">
+        <input type="number" inputmode="decimal" step="0.01" id="editar-monto-${p.id}" value="${p.monto_esperado}">
+        <input type="date" id="editar-fecha-${p.id}" value="${p.fecha_esperada || ''}">
+        <button type="button" class="btn good" style="width:auto;padding:9px 14px" onclick="guardarEdicionCobro('${p.id}')">Guardar</button>
       </div>
       <div class="confirmar-box hide" id="confirmar-box-${p.id}">
         <input type="number" inputmode="decimal" step="0.01" id="confirmar-monto-${p.id}" value="${p.monto_esperado}">
         <input type="date" id="confirmar-fecha-${p.id}" value="${isoDate(new Date())}">
         <button type="button" class="btn good" style="width:auto;padding:9px 14px" onclick="confirmarCobro('${p.id}', '${p.caja_id}', '${p.categoria_id || ''}')">✓</button>
       </div>
-    </div>`).join('');
+    </div>`;
+}
+
+function renderRecurrentes(recurrentes) {
+  const el = document.getElementById('proy-recurrentes');
+  el.innerHTML = recurrentes.length === 0
+    ? '<div class="empty-note">Todavía no hay suficiente historial para predecir cobros recurrentes.</div>'
+    : recurrentes.map(filaCobroHtml).join('');
+}
+
+function renderPendientes(pendientes) {
+  const el = document.getElementById('proy-pendientes');
+  el.innerHTML = pendientes.length === 0
+    ? '<div class="empty-note">No tienes cobros pendientes capturados.</div>'
+    : pendientes.map(filaCobroHtml).join('');
 }
 
 function mostrarConfirmarCobro(id) {
   document.getElementById('confirmar-box-' + id).classList.toggle('hide');
+}
+
+function mostrarEditarCobro(id) {
+  document.getElementById('editar-box-' + id).classList.toggle('hide');
+}
+
+async function guardarEdicionCobro(id) {
+  const monto = parseFloat(document.getElementById('editar-monto-' + id).value);
+  const fecha = document.getElementById('editar-fecha-' + id).value || null;
+  if (!monto || monto <= 0) { alert('El monto debe ser mayor a cero.'); return; }
+
+  const { error } = await sb.from('cobros_pendientes')
+    .update({ monto_esperado: monto, fecha_esperada: fecha })
+    .eq('id', id);
+  if (error) { alert('No se pudo guardar el cambio: ' + error.message); return; }
+
+  showToast('✓ Cambios guardados');
+  await loadProyeccion();
 }
 
 async function confirmarCobro(id, cajaId, categoriaId) {
@@ -545,6 +584,7 @@ document.getElementById('cobro-form').addEventListener('submit', async (e) => {
     monto_esperado: parseFloat(document.getElementById('cobro-monto').value),
     fecha_pago: document.getElementById('cobro-fecha-pago').value || null,
     fecha_esperada: document.getElementById('cobro-fecha-esperada').value || null,
+    origen: 'Manual',
   };
 
   if (!payload.monto_esperado || payload.monto_esperado <= 0) {
