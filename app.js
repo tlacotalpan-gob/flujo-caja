@@ -61,7 +61,7 @@ async function loadCatalogos() {
   const { data: categorias } = await sb.from('categorias').select('*').eq('activa', true).order('nombre');
   CATEGORIAS = categorias || [];
 
-  const cajaSelects = ['mov-caja', 'tr-origen', 'tr-destino'];
+  const cajaSelects = ['mov-caja', 'tr-origen', 'tr-destino', 'cobro-caja'];
   cajaSelects.forEach(id => {
     const el = document.getElementById(id);
     el.innerHTML = CAJAS.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
@@ -353,6 +353,217 @@ function categoriaNombre(id) {
   return c ? c.nombre : 'Sin categoría';
 }
 
+// ---------- Proyección ----------
+
+function renderCobroCategoriaSelect() {
+  const sel = document.getElementById('cobro-categoria');
+  if (!sel) return;
+  const opciones = CATEGORIAS.filter(c => c.tipo === 'Ingreso' || c.tipo === 'Ambos');
+  sel.innerHTML = '<option value="">(sin categoría)</option>' +
+    opciones.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
+}
+
+function proyectarRecurrente(movs) {
+  // movs: lista ordenada por fecha ascendente de {fecha, monto}
+  if (!movs || movs.length === 0) return null;
+  const fechas = movs.map(m => new Date(m.fecha + 'T00:00:00'));
+  const montos = movs.map(m => Number(m.monto));
+  const ultimaFecha = fechas[fechas.length - 1];
+
+  let intervalos = [];
+  for (let i = 1; i < fechas.length; i++) intervalos.push((fechas[i] - fechas[i - 1]) / 86400000);
+  const intervaloProm = intervalos.length ? intervalos.reduce((a, b) => a + b, 0) / intervalos.length : 30;
+
+  const ultimos3 = montos.slice(-3);
+  const montoProm = ultimos3.reduce((a, b) => a + b, 0) / ultimos3.length;
+
+  return {
+    proximaFecha: new Date(ultimaFecha.getTime() + intervaloProm * 86400000),
+    montoEsperado: montoProm,
+  };
+}
+
+async function loadProyeccion() {
+  renderCobroCategoriaSelect();
+
+  // Saldo actual (mismo cálculo que loadSaldos)
+  const { data: movs } = await sb.from('movimientos').select('caja_id, tipo, monto');
+  let saldoActual = 0;
+  CAJAS.forEach(c => { saldoActual += Number(c.saldo_inicial) || 0; });
+  (movs || []).forEach(m => { saldoActual += (m.tipo === 'Entrada' ? 1 : -1) * Number(m.monto); });
+
+  const hoy = new Date();
+  const en30dias = new Date(hoy.getTime() + 30 * 86400000);
+
+  // Recurrentes: entradas de categoría "Arrendamiento", agrupadas por Concepto (Retro, Compactador...)
+  const catArrendamiento = CATEGORIAS.find(c => c.nombre === 'Arrendamiento');
+  let recurrentes = [];
+  if (catArrendamiento) {
+    const { data: movsArr } = await sb.from('movimientos')
+      .select('fecha, monto, concepto')
+      .eq('categoria_id', catArrendamiento.id)
+      .eq('tipo', 'Entrada')
+      .eq('es_transferencia', false)
+      .order('fecha', { ascending: true });
+
+    const porConcepto = {};
+    (movsArr || []).forEach(m => {
+      const key = m.concepto || '(sin nombre)';
+      (porConcepto[key] = porConcepto[key] || []).push(m);
+    });
+
+    recurrentes = Object.entries(porConcepto)
+      .map(([concepto, lista]) => ({ concepto, ...proyectarRecurrente(lista) }))
+      .filter(r => r.proximaFecha);
+  }
+  renderRecurrentes(recurrentes);
+
+  // Cobros pendientes de reintegro (capturados a mano)
+  const { data: pendientes } = await sb.from('cobros_pendientes')
+    .select('*')
+    .eq('estado', 'Pendiente')
+    .order('fecha_esperada', { ascending: true, nullsFirst: false });
+  renderPendientes(pendientes || []);
+
+  const cobrosRecurrentesEn30 = recurrentes
+    .filter(r => r.proximaFecha <= en30dias)
+    .reduce((sum, r) => sum + r.montoEsperado, 0);
+  const cobrosPendientesEn30 = (pendientes || [])
+    .filter(p => !p.fecha_esperada || new Date(p.fecha_esperada + 'T00:00:00') <= en30dias)
+    .reduce((sum, p) => sum + Number(p.monto_esperado), 0);
+  const totalPendientes = (pendientes || []).reduce((sum, p) => sum + Number(p.monto_esperado), 0);
+
+  document.getElementById('proy-saldo-actual').textContent = fmtMoney(saldoActual);
+  document.getElementById('proy-cobros-esperados').textContent = fmtMoney(cobrosRecurrentesEn30 + cobrosPendientesEn30);
+  document.getElementById('proy-cuentas-cobrar').textContent = fmtMoney(totalPendientes);
+  document.getElementById('proy-30').textContent = fmtMoney(saldoActual + cobrosRecurrentesEn30 + cobrosPendientesEn30);
+}
+
+function fmtFecha(d) {
+  if (!(d instanceof Date)) d = new Date(d + 'T00:00:00');
+  return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
+}
+
+function renderRecurrentes(recurrentes) {
+  const el = document.getElementById('proy-recurrentes');
+  if (recurrentes.length === 0) {
+    el.innerHTML = '<div class="empty-note">Todavía no hay suficiente historial para predecir cobros recurrentes.</div>';
+    return;
+  }
+  el.innerHTML = recurrentes
+    .sort((a, b) => a.proximaFecha - b.proximaFecha)
+    .map(r => `
+      <div class="recur-row">
+        <div>
+          <div class="nombre">${r.concepto}</div>
+          <div class="cuando">Próximo esperado: ${fmtFecha(r.proximaFecha)}</div>
+        </div>
+        <div class="monto">${fmtMoney(r.montoEsperado)}</div>
+      </div>`).join('');
+}
+
+function renderPendientes(pendientes) {
+  const el = document.getElementById('proy-pendientes');
+  if (pendientes.length === 0) {
+    el.innerHTML = '<div class="empty-note">No tienes cobros pendientes capturados.</div>';
+    return;
+  }
+  el.innerHTML = pendientes.map(p => `
+    <div class="cobro-row" data-id="${p.id}">
+      <div class="top">
+        <div>
+          <div class="desc">${p.descripcion || '(sin descripción)'}</div>
+          <div class="cuando">${p.fecha_esperada ? 'Esperado: ' + fmtFecha(p.fecha_esperada) : 'Sin fecha esperada'}</div>
+        </div>
+        <div class="monto">${fmtMoney(p.monto_esperado)}</div>
+      </div>
+      <div class="acciones">
+        <button type="button" class="link-btn confirmar" onclick="mostrarConfirmarCobro('${p.id}')">Marcar cobrado</button>
+        <button type="button" class="link-btn cancelar" onclick="cancelarCobro('${p.id}')">Cancelar</button>
+      </div>
+      <div class="confirmar-box hide" id="confirmar-box-${p.id}">
+        <input type="number" inputmode="decimal" step="0.01" id="confirmar-monto-${p.id}" value="${p.monto_esperado}">
+        <input type="date" id="confirmar-fecha-${p.id}" value="${isoDate(new Date())}">
+        <button type="button" class="btn good" style="width:auto;padding:9px 14px" onclick="confirmarCobro('${p.id}', '${p.caja_id}', '${p.categoria_id || ''}')">✓</button>
+      </div>
+    </div>`).join('');
+}
+
+function mostrarConfirmarCobro(id) {
+  document.getElementById('confirmar-box-' + id).classList.toggle('hide');
+}
+
+async function confirmarCobro(id, cajaId, categoriaId) {
+  const monto = parseFloat(document.getElementById('confirmar-monto-' + id).value);
+  const fecha = document.getElementById('confirmar-fecha-' + id).value;
+  if (!monto || monto <= 0) return;
+
+  const { data: mov, error: errMov } = await sb.from('movimientos').insert({
+    fecha,
+    caja_id: cajaId,
+    tipo: 'Entrada',
+    monto,
+    categoria_id: categoriaId || null,
+    concepto: 'Cobro de reintegro',
+    descripcion: null,
+  }).select().single();
+  if (errMov) { alert('No se pudo registrar el cobro: ' + errMov.message); return; }
+
+  const { error: errUpd } = await sb.from('cobros_pendientes')
+    .update({ estado: 'Cobrado', movimiento_id: mov.id })
+    .eq('id', id);
+  if (errUpd) { alert('El cobro se registró, pero no se pudo actualizar el pendiente: ' + errUpd.message); }
+
+  showToast(`✓ Cobro de ${fmtMoney(monto)} registrado`);
+  await loadProyeccion();
+  await loadSaldos();
+}
+
+async function cancelarCobro(id) {
+  const { error } = await sb.from('cobros_pendientes').update({ estado: 'Cancelado' }).eq('id', id);
+  if (error) { alert('No se pudo cancelar: ' + error.message); return; }
+  await loadProyeccion();
+}
+
+document.getElementById('btn-nuevo-cobro').addEventListener('click', () => {
+  document.getElementById('cobro-form').classList.toggle('hide');
+});
+document.getElementById('btn-cancelar-cobro').addEventListener('click', () => {
+  document.getElementById('cobro-form').classList.add('hide');
+  document.getElementById('cobro-form').reset();
+});
+
+document.getElementById('cobro-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msgEl = document.getElementById('cobro-msg');
+  msgEl.textContent = '';
+
+  const payload = {
+    descripcion: document.getElementById('cobro-descripcion').value || null,
+    caja_id: document.getElementById('cobro-caja').value,
+    categoria_id: document.getElementById('cobro-categoria').value || null,
+    monto_esperado: parseFloat(document.getElementById('cobro-monto').value),
+    fecha_pago: document.getElementById('cobro-fecha-pago').value || null,
+    fecha_esperada: document.getElementById('cobro-fecha-esperada').value || null,
+  };
+
+  if (!payload.monto_esperado || payload.monto_esperado <= 0) {
+    msgEl.textContent = 'El monto esperado debe ser mayor a cero.';
+    return;
+  }
+
+  const { error } = await sb.from('cobros_pendientes').insert(payload);
+  if (error) {
+    msgEl.textContent = 'No se pudo guardar: ' + error.message;
+    return;
+  }
+
+  showToast('✓ Cobro pendiente guardado');
+  document.getElementById('cobro-form').reset();
+  document.getElementById('cobro-form').classList.add('hide');
+  await loadProyeccion();
+});
+
 // ---------- Utilidades ----------
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
@@ -364,6 +575,7 @@ function showScreen(name, btn) {
   document.querySelectorAll('.navbtn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   if (name === 'flujo') loadFlujo();
+  if (name === 'proyeccion') loadProyeccion();
 }
 
 function showToast(text) {
