@@ -14,6 +14,11 @@ let MOVLIST_PERIODO = 'mes';
 let MOVLIST_TIPO = '';
 let MOVLIST_CAJA = '';
 let MOVLIST_BUSCAR = '';
+let UTIL_PERIODO = 'mes';
+let UTIL_CAJA = '';
+let UTIL_DESDE_PERSONALIZADO = null;
+let UTIL_HASTA_PERSONALIZADO = null;
+let UTIL_DETALLE = {};
 
 // ---------- Mayúsculas automáticas ----------
 // Cualquier campo de texto libre con class="mayus" se convierte a
@@ -135,6 +140,19 @@ async function loadCatalogos() {
       chip.classList.add('active');
       MOVLIST_TIPO = chip.dataset.tipo;
       loadMovimientosList();
+    });
+  });
+
+  // filtro de caja en la pantalla Utilidad
+  const utilCajaFiltersEl = document.getElementById('util-caja-filters');
+  utilCajaFiltersEl.innerHTML = '<div class="chip active" data-caja="">Todo</div>' +
+    CAJAS.map(c => `<div class="chip" data-caja="${c.id}">${c.nombre}</div>`).join('');
+  utilCajaFiltersEl.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      utilCajaFiltersEl.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      UTIL_CAJA = chip.dataset.caja;
+      loadUtilidad();
     });
   });
 }
@@ -792,6 +810,278 @@ document.getElementById('mov-list-buscar').addEventListener('input', () => {
   loadMovimientosList();
 });
 
+// ---------- Utilidad (dashboard de Ingresos - Egresos por categoría) ----------
+// Usa exactamente los mismos movimientos y categorías que Flujo; no se
+// duplica ninguna fuente de datos, solo se agrega de otra forma.
+
+function rangoDeFechasUtilidad(periodo) {
+  const hoy = new Date();
+  let desde, hasta, prevDesde, prevHasta;
+
+  if (periodo === 'personalizado') {
+    if (!UTIL_DESDE_PERSONALIZADO || !UTIL_HASTA_PERSONALIZADO) return null;
+    desde = new Date(UTIL_DESDE_PERSONALIZADO + 'T00:00:00');
+    hasta = new Date(UTIL_HASTA_PERSONALIZADO + 'T00:00:00');
+    const dias = Math.round((hasta - desde) / 86400000) + 1;
+    prevHasta = new Date(desde.getTime() - 86400000);
+    prevDesde = new Date(prevHasta.getTime() - (dias - 1) * 86400000);
+  } else if (periodo === 'hoy') {
+    desde = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+    hasta = desde;
+    prevDesde = new Date(desde.getTime() - 86400000);
+    prevHasta = prevDesde;
+  } else if (periodo === 'semana') {
+    const diaSemana = (hoy.getDay() + 6) % 7; // 0 = lunes
+    desde = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - diaSemana);
+    hasta = new Date(desde.getTime() + 6 * 86400000);
+    prevHasta = new Date(desde.getTime() - 86400000);
+    prevDesde = new Date(prevHasta.getTime() - 6 * 86400000);
+  } else if (periodo === 'mes_pasado') {
+    desde = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+    hasta = new Date(hoy.getFullYear(), hoy.getMonth(), 0);
+    prevDesde = new Date(hoy.getFullYear(), hoy.getMonth() - 2, 1);
+    prevHasta = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 0);
+  } else if (periodo === 'anio') {
+    desde = new Date(hoy.getFullYear(), 0, 1);
+    hasta = new Date(hoy.getFullYear(), 11, 31);
+    prevDesde = new Date(hoy.getFullYear() - 1, 0, 1);
+    prevHasta = new Date(hoy.getFullYear() - 1, 11, 31);
+  } else {
+    // 'mes' (por defecto): este mes
+    desde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    hasta = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+    prevDesde = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+    prevHasta = new Date(hoy.getFullYear(), hoy.getMonth(), 0);
+  }
+
+  return {
+    desde: isoDate(desde), hasta: isoDate(hasta),
+    prevDesde: isoDate(prevDesde), prevHasta: isoDate(prevHasta),
+  };
+}
+
+async function fetchMovimientosUtilidad(desde, hasta) {
+  let query = sb.from('movimientos')
+    .select('id, fecha, tipo, monto, categoria_id, caja_id, concepto, descripcion, es_transferencia')
+    .eq('es_transferencia', false)
+    .gte('fecha', desde)
+    .lte('fecha', hasta);
+  if (UTIL_CAJA) query = query.eq('caja_id', UTIL_CAJA);
+  const { data, error } = await query;
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+
+function agregarPorCategoria(movs) {
+  const porCategoria = {};
+  let ingresosTotal = 0, egresosTotal = 0;
+  movs.forEach(m => {
+    const catId = m.categoria_id || 'sin-categoria';
+    if (!porCategoria[catId]) porCategoria[catId] = { ingresos: 0, egresos: 0, movs: [] };
+    const monto = Number(m.monto);
+    if (m.tipo === 'Entrada') { porCategoria[catId].ingresos += monto; ingresosTotal += monto; }
+    else { porCategoria[catId].egresos += monto; egresosTotal += monto; }
+    porCategoria[catId].movs.push(m);
+  });
+  Object.values(porCategoria).forEach(c => {
+    c.utilidad = c.ingresos - c.egresos;
+    c.margen = c.ingresos > 0 ? (c.utilidad / c.ingresos * 100) : null;
+  });
+  const utilidadTotal = ingresosTotal - egresosTotal;
+  const margenTotal = ingresosTotal > 0 ? (utilidadTotal / ingresosTotal * 100) : null;
+  return { porCategoria, ingresosTotal, egresosTotal, utilidadTotal, margenTotal };
+}
+
+function nombreCategoriaUtil(catId) {
+  return categoriaNombre(catId === 'sin-categoria' ? null : catId);
+}
+
+function fmtPct(n) {
+  if (n === null || n === undefined || !isFinite(n)) return 'N/A';
+  return n.toFixed(1) + '%';
+}
+
+async function loadUtilidad() {
+  const rango = rangoDeFechasUtilidad(UTIL_PERIODO);
+  if (!rango) return; // "Personalizado" sin fechas elegidas todavía
+
+  const [movsActual, movsPrevio] = await Promise.all([
+    fetchMovimientosUtilidad(rango.desde, rango.hasta),
+    fetchMovimientosUtilidad(rango.prevDesde, rango.prevHasta),
+  ]);
+
+  const actual = agregarPorCategoria(movsActual);
+  const previo = agregarPorCategoria(movsPrevio);
+  UTIL_DETALLE = actual.porCategoria;
+
+  renderUtilidadKPIs(actual, previo);
+  renderBarrasUtilidad(actual.porCategoria);
+
+  const ingresosPorNombre = {}, egresosPorNombre = {};
+  Object.entries(actual.porCategoria).forEach(([catId, d]) => {
+    if (d.ingresos > 0) ingresosPorNombre[nombreCategoriaUtil(catId)] = d.ingresos;
+    if (d.egresos > 0) egresosPorNombre[nombreCategoriaUtil(catId)] = d.egresos;
+  });
+  renderRanking('util-bars-ingresos', ingresosPorNombre, 'var(--series-1)');
+  renderRanking('util-bars-egresos', egresosPorNombre, 'var(--series-2)');
+
+  renderInsightsUtilidad(actual, previo);
+}
+
+function renderUtilidadKPIs(actual, previo) {
+  document.getElementById('util-ingresos').textContent = fmtMoney(actual.ingresosTotal);
+  document.getElementById('util-egresos').textContent = fmtMoney(actual.egresosTotal);
+  document.getElementById('util-utilidad').textContent = fmtMoney(actual.utilidadTotal);
+  document.getElementById('util-margen').textContent = 'Margen ' + fmtPct(actual.margenTotal);
+
+  const heroEl = document.getElementById('util-hero-utilidad');
+  heroEl.classList.toggle('positivo', actual.utilidadTotal >= 0);
+  heroEl.classList.toggle('negativo', actual.utilidadTotal < 0);
+
+  const compEl = document.getElementById('util-comparacion');
+  const tienePrevio = (previo.ingresosTotal + previo.egresosTotal) > 0;
+  if (!tienePrevio) {
+    compEl.classList.add('hide');
+    compEl.innerHTML = '';
+    return;
+  }
+  compEl.classList.remove('hide');
+  const cambios = [
+    { label: 'Ingresos', actual: actual.ingresosTotal, previo: previo.ingresosTotal },
+    { label: 'Egresos', actual: actual.egresosTotal, previo: previo.egresosTotal },
+    { label: 'Utilidad', actual: actual.utilidadTotal, previo: previo.utilidadTotal },
+  ];
+  compEl.innerHTML = '<div class="titulo">vs. periodo anterior</div>' + cambios.map(c => {
+    if (c.previo === 0) return `<div class="item"><span class="lbl">${c.label}</span><span class="val">—</span></div>`;
+    const pct = (c.actual - c.previo) / Math.abs(c.previo) * 100;
+    const arriba = pct >= 0;
+    return `<div class="item"><span class="lbl">${c.label}</span><span class="val ${arriba ? 'up' : 'down'}">${arriba ? '↑' : '↓'} ${Math.abs(pct).toFixed(0)}%</span></div>`;
+  }).join('');
+}
+
+function renderBarrasUtilidad(porCategoria) {
+  const el = document.getElementById('util-bars-utilidad');
+  const entries = Object.entries(porCategoria)
+    .map(([catId, d]) => ({ catId, nombre: nombreCategoriaUtil(catId), ...d }))
+    .sort((a, b) => b.utilidad - a.utilidad);
+
+  if (entries.length === 0) {
+    el.innerHTML = '<div class="empty-note">Sin movimientos en este periodo.</div>';
+    return;
+  }
+
+  const max = Math.max(...entries.map(e => Math.abs(e.utilidad)), 1);
+  el.innerHTML = entries.map(e => {
+    const pos = e.utilidad >= 0;
+    const ancho = Math.max(4, Math.abs(e.utilidad) / max * 100).toFixed(0);
+    return `
+      <div class="util-bar-row" onclick="abrirDetalleUtilidad('${e.catId}')">
+        <div class="head">
+          <span class="cat">${e.nombre}</span>
+          <span class="amt ${pos ? 'pos' : 'neg'}">${pos ? '' : '-'}${fmtMoney(Math.abs(e.utilidad))}</span>
+        </div>
+        <div class="track"><div class="fill ${pos ? 'pos' : 'neg'}" style="width:${ancho}%"></div></div>
+      </div>`;
+  }).join('');
+}
+
+function renderInsightsUtilidad(actual, previo) {
+  const el = document.getElementById('util-insights');
+  const insights = [];
+
+  const catsConIngreso = Object.entries(actual.porCategoria).filter(([, d]) => d.ingresos > 0);
+  if (catsConIngreso.length && actual.ingresosTotal > 0) {
+    const [topCatId, topCat] = catsConIngreso.sort((a, b) => b[1].ingresos - a[1].ingresos)[0];
+    const pct = (topCat.ingresos / actual.ingresosTotal * 100).toFixed(0);
+    insights.push(`${nombreCategoriaUtil(topCatId)} representa el ${pct}% de tus ingresos y tiene un margen de ${fmtPct(topCat.margen)}.`);
+  }
+
+  const catsConEgreso = Object.entries(actual.porCategoria).filter(([, d]) => d.egresos > 0);
+  if (catsConEgreso.length && actual.egresosTotal > 0) {
+    const [topCatId, topCat] = catsConEgreso.sort((a, b) => b[1].egresos - a[1].egresos)[0];
+    const pct = (topCat.egresos / actual.egresosTotal * 100).toFixed(0);
+    insights.push(`${nombreCategoriaUtil(topCatId)} es tu mayor egreso este periodo: representa el ${pct}% del total.`);
+  }
+
+  const tienePrevio = (previo.ingresosTotal + previo.egresosTotal) > 0;
+  if (tienePrevio && previo.utilidadTotal !== 0) {
+    const pct = (actual.utilidadTotal - previo.utilidadTotal) / Math.abs(previo.utilidadTotal) * 100;
+    insights.push(`Tu utilidad ${pct >= 0 ? 'subió' : 'bajó'} ${Math.abs(pct).toFixed(0)}% respecto al periodo anterior.`);
+  }
+
+  const negativas = Object.entries(actual.porCategoria).filter(([, d]) => d.utilidad < 0).sort((a, b) => a[1].utilidad - b[1].utilidad);
+  if (negativas.length) {
+    const [catId, d] = negativas[0];
+    insights.push(`${nombreCategoriaUtil(catId)} está generando pérdida: -${fmtMoney(Math.abs(d.utilidad))}.`);
+  } else if (Object.keys(actual.porCategoria).length > 0) {
+    insights.push('Todas tus categorías tienen utilidad positiva en este periodo.');
+  }
+
+  const finales = insights.slice(0, 4);
+  el.innerHTML = finales.length === 0
+    ? '<div class="empty-note">Sin datos suficientes para generar lecturas.</div>'
+    : finales.map(txt => `<div class="insight-item"><span class="dot"></span><span>${txt}</span></div>`).join('');
+}
+
+function abrirDetalleUtilidad(catId) {
+  const d = UTIL_DETALLE[catId];
+  if (!d) return;
+
+  document.getElementById('util-modal-cat').textContent = nombreCategoriaUtil(catId);
+  document.getElementById('util-modal-in').textContent = fmtMoney(d.ingresos);
+  document.getElementById('util-modal-out').textContent = fmtMoney(d.egresos);
+  document.getElementById('util-modal-utilidad').textContent = fmtMoney(d.utilidad);
+  document.getElementById('util-modal-margen').textContent = fmtPct(d.margen);
+
+  const movsOrdenados = [...d.movs].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  const movsEl = document.getElementById('util-modal-movs');
+  movsEl.innerHTML = movsOrdenados.length === 0
+    ? '<div class="empty-note">Sin movimientos.</div>'
+    : movsOrdenados.map(m => `
+      <div class="modal-mov-row">
+        <div>
+          <div class="desc">${m.concepto || m.descripcion || '(sin descripción)'}</div>
+          <div class="fecha">${fmtFecha(m.fecha)}</div>
+        </div>
+        <div style="font-weight:700; color:${m.tipo === 'Entrada' ? 'var(--good)' : 'var(--critical)'}">${m.tipo === 'Entrada' ? '+' : '-'}${fmtMoney(m.monto)}</div>
+      </div>`).join('');
+
+  document.getElementById('util-modal').classList.remove('hide');
+}
+
+document.getElementById('util-modal-cerrar').addEventListener('click', () => {
+  document.getElementById('util-modal').classList.add('hide');
+});
+document.getElementById('util-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'util-modal') document.getElementById('util-modal').classList.add('hide');
+});
+
+document.getElementById('util-periodo-filters').querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('#util-periodo-filters .chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    UTIL_PERIODO = chip.dataset.periodo;
+    const rangoBox = document.getElementById('util-rango-personalizado');
+    if (UTIL_PERIODO === 'personalizado') {
+      rangoBox.classList.remove('hide');
+      if (UTIL_DESDE_PERSONALIZADO && UTIL_HASTA_PERSONALIZADO) loadUtilidad();
+    } else {
+      rangoBox.classList.add('hide');
+      loadUtilidad();
+    }
+  });
+});
+
+document.getElementById('util-aplicar-rango').addEventListener('click', () => {
+  const desde = document.getElementById('util-desde').value;
+  const hasta = document.getElementById('util-hasta').value;
+  if (!desde || !hasta) { alert('Elige las dos fechas.'); return; }
+  if (desde > hasta) { alert('La fecha "desde" no puede ser posterior a "hasta".'); return; }
+  UTIL_DESDE_PERSONALIZADO = desde;
+  UTIL_HASTA_PERSONALIZADO = hasta;
+  loadUtilidad();
+});
+
 // ---------- Utilidades ----------
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
@@ -805,6 +1095,7 @@ function showScreen(name, btn) {
   if (name === 'flujo') loadFlujo();
   if (name === 'proyeccion') loadProyeccion();
   if (name === 'movimientos') loadMovimientosList();
+  if (name === 'utilidad') loadUtilidad();
 }
 
 function showToast(text) {
