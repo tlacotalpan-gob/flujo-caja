@@ -10,6 +10,9 @@ let CATEGORIAS = [];  // catálogo de categorías cargado de Supabase
 let TIPO_ACTUAL = 'Entrada';
 let CAJA_FILTRO = '';
 let PERIODO_FILTRO = 'mes';
+let MOVLIST_PERIODO = 'mes';
+let MOVLIST_TIPO = '';
+let MOVLIST_CAJA = '';
 
 // ---------- Sesión / login ----------
 
@@ -88,6 +91,37 @@ async function loadCatalogos() {
       chip.classList.add('active');
       PERIODO_FILTRO = chip.dataset.periodo;
       loadFlujo();
+    });
+  });
+
+  // filtros de la pantalla Movimientos
+  const movCajaFiltersEl = document.getElementById('mov-list-caja-filters');
+  movCajaFiltersEl.innerHTML = '<div class="chip active" data-caja="">Ambas cajas</div>' +
+    CAJAS.map(c => `<div class="chip" data-caja="${c.id}">${c.nombre}</div>`).join('');
+  movCajaFiltersEl.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      movCajaFiltersEl.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      MOVLIST_CAJA = chip.dataset.caja;
+      loadMovimientosList();
+    });
+  });
+
+  document.getElementById('mov-list-periodo-filters').querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('#mov-list-periodo-filters .chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      MOVLIST_PERIODO = chip.dataset.periodo;
+      loadMovimientosList();
+    });
+  });
+
+  document.getElementById('mov-list-tipo-filters').querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('#mov-list-tipo-filters .chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      MOVLIST_TIPO = chip.dataset.tipo;
+      loadMovimientosList();
     });
   });
 }
@@ -455,10 +489,8 @@ async function loadProyeccion() {
   const cobrosEsperados30 = pendientes
     .filter(p => !p.fecha_esperada || new Date(p.fecha_esperada + 'T00:00:00') <= en30dias)
     .reduce((sum, p) => sum + Number(p.monto_esperado), 0);
-  const totalPendientes = pendientes.reduce((sum, p) => sum + Number(p.monto_esperado), 0);
 
   document.getElementById('proy-cobros-esperados').textContent = fmtMoney(cobrosEsperados30);
-  document.getElementById('proy-cuentas-cobrar').textContent = fmtMoney(totalPendientes);
   document.getElementById('proy-30').textContent = fmtMoney(saldoActual + cobrosEsperados30);
 }
 
@@ -604,6 +636,120 @@ document.getElementById('cobro-form').addEventListener('submit', async (e) => {
   await loadProyeccion();
 });
 
+// ---------- Movimientos (ver / editar / eliminar) ----------
+
+function cajaNombre(id) {
+  const c = CAJAS.find(c => c.id === id);
+  return c ? c.nombre : '—';
+}
+
+function categoriaOptionsHtml(tipo, selectedId) {
+  const tipoCatalogo = tipo === 'Entrada' ? 'Ingreso' : 'Egreso';
+  const opciones = CATEGORIAS.filter(c => c.tipo === tipoCatalogo || c.tipo === 'Ambos');
+  return '<option value="">(sin categoría)</option>' +
+    opciones.map(c => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.nombre}</option>`).join('');
+}
+
+async function loadMovimientosList() {
+  const { desde, hasta } = rangoDeFechas(MOVLIST_PERIODO);
+  let query = sb.from('movimientos')
+    .select('id, fecha, tipo, monto, caja_id, categoria_id, concepto, descripcion, es_transferencia')
+    .order('fecha', { ascending: false });
+
+  if (desde) query = query.gte('fecha', desde);
+  if (hasta) query = query.lte('fecha', hasta);
+  if (MOVLIST_CAJA) query = query.eq('caja_id', MOVLIST_CAJA);
+  if (MOVLIST_TIPO) query = query.eq('tipo', MOVLIST_TIPO);
+
+  const { data: movs, error } = await query;
+  if (error) { console.error(error); return; }
+
+  renderMovimientosList(movs || []);
+}
+
+function filaMovimientoHtml(m) {
+  const editable = !m.es_transferencia;
+  const signo = m.tipo === 'Entrada' ? '+' : '-';
+  const claseMonto = m.tipo === 'Entrada' ? 'in' : 'out';
+  return `
+    <div class="mov-row" data-id="${m.id}">
+      <div class="top">
+        <div>
+          <div class="desc">${m.concepto || m.descripcion || '(sin descripción)'}</div>
+          <div class="meta">${fmtFecha(m.fecha)} · ${cajaNombre(m.caja_id)} · ${categoriaNombre(m.categoria_id)}</div>
+          ${m.es_transferencia ? '<div class="tag-transferencia">Generado por transferencia</div>' : ''}
+        </div>
+        <div class="monto ${claseMonto}">${signo}${fmtMoney(m.monto)}</div>
+      </div>
+      ${editable ? `
+      <div class="acciones">
+        <button type="button" class="link-btn" onclick="mostrarEditarMovimiento('${m.id}')">Editar</button>
+        <button type="button" class="link-btn eliminar" onclick="mostrarEliminarMovimiento('${m.id}')">Eliminar</button>
+      </div>
+      <div class="edit-box hide" id="mov-edit-box-${m.id}">
+        <input type="date" id="mov-edit-fecha-${m.id}" value="${m.fecha}">
+        <select id="mov-edit-caja-${m.id}">${CAJAS.map(c => `<option value="${c.id}" ${c.id === m.caja_id ? 'selected' : ''}>${c.nombre}</option>`).join('')}</select>
+        <select id="mov-edit-categoria-${m.id}">${categoriaOptionsHtml(m.tipo, m.categoria_id)}</select>
+        <input type="number" inputmode="decimal" step="0.01" id="mov-edit-monto-${m.id}" value="${m.monto}">
+        <input type="text" id="mov-edit-concepto-${m.id}" value="${m.concepto || ''}" placeholder="Proyecto/Concepto">
+        <input type="text" id="mov-edit-descripcion-${m.id}" value="${m.descripcion || ''}" placeholder="Descripción">
+        <button type="button" class="btn good" onclick="guardarEdicionMovimiento('${m.id}')">Guardar cambios</button>
+      </div>
+      <div class="confirmar-eliminar hide" id="mov-del-box-${m.id}">
+        ¿Seguro que quieres eliminar este movimiento?
+        <button type="button" class="btn secondary" onclick="mostrarEliminarMovimiento('${m.id}')">Cancelar</button>
+        <button type="button" class="btn" style="background:var(--critical)" onclick="eliminarMovimiento('${m.id}')">Sí, eliminar</button>
+      </div>` : ''}
+    </div>`;
+}
+
+function renderMovimientosList(movs) {
+  const el = document.getElementById('mov-list');
+  el.innerHTML = movs.length === 0
+    ? '<div class="empty-note">No hay movimientos con estos filtros.</div>'
+    : movs.map(filaMovimientoHtml).join('');
+}
+
+function mostrarEditarMovimiento(id) {
+  document.getElementById('mov-edit-box-' + id).classList.toggle('hide');
+}
+
+function mostrarEliminarMovimiento(id) {
+  document.getElementById('mov-del-box-' + id).classList.toggle('hide');
+}
+
+async function guardarEdicionMovimiento(id) {
+  const monto = parseFloat(document.getElementById('mov-edit-monto-' + id).value);
+  if (!monto || monto <= 0) { alert('El monto debe ser mayor a cero.'); return; }
+
+  const payload = {
+    fecha: document.getElementById('mov-edit-fecha-' + id).value,
+    caja_id: document.getElementById('mov-edit-caja-' + id).value,
+    categoria_id: document.getElementById('mov-edit-categoria-' + id).value || null,
+    monto,
+    concepto: document.getElementById('mov-edit-concepto-' + id).value || null,
+    descripcion: document.getElementById('mov-edit-descripcion-' + id).value || null,
+  };
+
+  const { error } = await sb.from('movimientos').update(payload).eq('id', id);
+  if (error) { alert('No se pudo guardar el cambio: ' + error.message); return; }
+
+  showToast('✓ Movimiento actualizado');
+  await loadMovimientosList();
+  await loadSaldos();
+  await loadFlujo();
+}
+
+async function eliminarMovimiento(id) {
+  const { error } = await sb.from('movimientos').delete().eq('id', id);
+  if (error) { alert('No se pudo eliminar: ' + error.message); return; }
+
+  showToast('✓ Movimiento eliminado');
+  await loadMovimientosList();
+  await loadSaldos();
+  await loadFlujo();
+}
+
 // ---------- Utilidades ----------
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
@@ -616,6 +762,7 @@ function showScreen(name, btn) {
   btn.classList.add('active');
   if (name === 'flujo') loadFlujo();
   if (name === 'proyeccion') loadProyeccion();
+  if (name === 'movimientos') loadMovimientosList();
 }
 
 function showToast(text) {
