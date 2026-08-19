@@ -13,6 +13,19 @@ let PERIODO_FILTRO = 'mes';
 let MOVLIST_PERIODO = 'mes';
 let MOVLIST_TIPO = '';
 let MOVLIST_CAJA = '';
+let MOVLIST_BUSCAR = '';
+
+// ---------- Mayúsculas automáticas ----------
+// Cualquier campo de texto libre con class="mayus" se convierte a
+// mayúsculas mientras el usuario escribe (login no lleva esta clase).
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (el.classList && el.classList.contains('mayus')) {
+    const pos = el.selectionStart;
+    el.value = el.value.toUpperCase();
+    if (pos !== null) el.setSelectionRange(pos, pos);
+  }
+});
 
 // ---------- Sesión / login ----------
 
@@ -178,7 +191,7 @@ document.getElementById('btn-nueva-categoria').addEventListener('click', () => t
 document.getElementById('btn-cancelar-categoria').addEventListener('click', () => toggleNuevaCategoria(true));
 
 document.getElementById('btn-guardar-categoria').addEventListener('click', async () => {
-  const nombre = document.getElementById('nueva-categoria-nombre').value.trim();
+  const nombre = document.getElementById('nueva-categoria-nombre').value.trim().toUpperCase();
   const msgEl = document.getElementById('nueva-categoria-msg');
   msgEl.textContent = '';
   if (!nombre) {
@@ -213,8 +226,8 @@ document.getElementById('mov-form').addEventListener('submit', async (e) => {
     tipo: TIPO_ACTUAL,
     monto: parseFloat(document.getElementById('mov-monto').value),
     categoria_id: document.getElementById('mov-categoria').value || null,
-    concepto: document.getElementById('mov-concepto').value || null,
-    descripcion: document.getElementById('mov-descripcion').value || null,
+    concepto: document.getElementById('mov-concepto').value.toUpperCase() || null,
+    descripcion: document.getElementById('mov-descripcion').value.toUpperCase() || null,
   };
 
   if (!payload.monto || payload.monto <= 0) {
@@ -268,7 +281,7 @@ document.getElementById('tr-form').addEventListener('submit', async (e) => {
     caja_origen_id: origen,
     caja_destino_id: destino,
     monto,
-    motivo: document.getElementById('tr-motivo').value || null,
+    motivo: document.getElementById('tr-motivo').value.toUpperCase() || null,
   };
 
   const { error } = await sb.from('transferencias').insert(payload);
@@ -610,7 +623,7 @@ document.getElementById('cobro-form').addEventListener('submit', async (e) => {
   msgEl.textContent = '';
 
   const payload = {
-    descripcion: document.getElementById('cobro-descripcion').value || null,
+    descripcion: document.getElementById('cobro-descripcion').value.toUpperCase() || null,
     caja_id: document.getElementById('cobro-caja').value,
     categoria_id: document.getElementById('cobro-categoria').value || null,
     monto_esperado: parseFloat(document.getElementById('cobro-monto').value),
@@ -664,7 +677,31 @@ async function loadMovimientosList() {
   const { data: movs, error } = await query;
   if (error) { console.error(error); return; }
 
-  renderMovimientosList(movs || []);
+  let lista = movs || [];
+  const buscar = MOVLIST_BUSCAR.trim().toUpperCase();
+  if (buscar) {
+    lista = lista.filter(m =>
+      (m.concepto || '').toUpperCase().includes(buscar) ||
+      (m.descripcion || '').toUpperCase().includes(buscar)
+    );
+  }
+
+  renderMovimientosList(lista);
+  renderMovimientosSubtotales(lista);
+}
+
+function renderMovimientosSubtotales(movs) {
+  let totalIn = 0, totalOut = 0;
+  movs.forEach(m => {
+    if (m.tipo === 'Entrada') totalIn += Number(m.monto);
+    else totalOut += Number(m.monto);
+  });
+  const neto = totalIn - totalOut;
+  document.getElementById('mov-list-in').textContent = fmtMoney(totalIn);
+  document.getElementById('mov-list-out').textContent = fmtMoney(totalOut);
+  const netoEl = document.getElementById('mov-list-neto');
+  netoEl.textContent = (neto >= 0 ? '+' : '') + fmtMoney(neto);
+  netoEl.style.color = neto >= 0 ? 'var(--good)' : 'var(--critical)';
 }
 
 function filaMovimientoHtml(m) {
@@ -691,8 +728,8 @@ function filaMovimientoHtml(m) {
         <select id="mov-edit-caja-${m.id}">${CAJAS.map(c => `<option value="${c.id}" ${c.id === m.caja_id ? 'selected' : ''}>${c.nombre}</option>`).join('')}</select>
         <select id="mov-edit-categoria-${m.id}">${categoriaOptionsHtml(m.tipo, m.categoria_id)}</select>
         <input type="number" inputmode="decimal" step="0.01" id="mov-edit-monto-${m.id}" value="${m.monto}">
-        <input type="text" id="mov-edit-concepto-${m.id}" value="${m.concepto || ''}" placeholder="Proyecto/Concepto">
-        <input type="text" id="mov-edit-descripcion-${m.id}" value="${m.descripcion || ''}" placeholder="Descripción">
+        <input type="text" id="mov-edit-concepto-${m.id}" class="mayus" value="${m.concepto || ''}" placeholder="Proyecto/Concepto">
+        <input type="text" id="mov-edit-descripcion-${m.id}" class="mayus" value="${m.descripcion || ''}" placeholder="Descripción">
         <button type="button" class="btn good" onclick="guardarEdicionMovimiento('${m.id}')">Guardar cambios</button>
       </div>
       <div class="confirmar-eliminar hide" id="mov-del-box-${m.id}">
@@ -727,8 +764,8 @@ async function guardarEdicionMovimiento(id) {
     caja_id: document.getElementById('mov-edit-caja-' + id).value,
     categoria_id: document.getElementById('mov-edit-categoria-' + id).value || null,
     monto,
-    concepto: document.getElementById('mov-edit-concepto-' + id).value || null,
-    descripcion: document.getElementById('mov-edit-descripcion-' + id).value || null,
+    concepto: document.getElementById('mov-edit-concepto-' + id).value.toUpperCase() || null,
+    descripcion: document.getElementById('mov-edit-descripcion-' + id).value.toUpperCase() || null,
   };
 
   const { error } = await sb.from('movimientos').update(payload).eq('id', id);
@@ -749,6 +786,11 @@ async function eliminarMovimiento(id) {
   await loadSaldos();
   await loadFlujo();
 }
+
+document.getElementById('mov-list-buscar').addEventListener('input', () => {
+  MOVLIST_BUSCAR = document.getElementById('mov-list-buscar').value;
+  loadMovimientosList();
+});
 
 // ---------- Utilidades ----------
 
