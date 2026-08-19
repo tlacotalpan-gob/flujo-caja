@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Flujo de Caja</title>
+<link rel="manifest" href="data:application/manifest+json,{%22name%22:%22Flujo%20de%20Caja%22,%22display%22:%22standalone%22,%22start_url%22:%22.%22,%22theme_color%22:%22%23fcfcfb%22,%22background_color%22:%22%23f9f9f7%22}">
+<style>
+  :root {
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --muted:          #898781;
+    --grid:           #e1e0d9;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;
+    --series-2:       #eb6834;
+    --good:           #0ca30c;
+    --warning:        #fab219;
+    --critical:       #d03b3b;
+    --good-bg:        #eaf7ea;
+    --critical-bg:    #fbeaea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text-primary);
+  }
+  .wrap { max-width: 480px; margin: 0 auto; padding-bottom: 90px; min-height: 100vh; }
+  .hide { display: none !important; }
+
+  /* ---- Login ---- */
+  #login-view { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
+  .login-card { background: var(--surface-1); border:1px solid var(--border); border-radius:18px; padding:28px 24px; width:100%; max-width:340px; }
+  .login-card h1 { font-size:20px; margin:0 0 4px; }
+  .login-card p { font-size:13px; color:var(--text-secondary); margin:0 0 18px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:4px; }
+  .field input, .field select, .field textarea {
+    width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--border);
+    font-size:15px; font-family:inherit; background:#fff; color:var(--text-primary);
+  }
+  .btn {
+    width:100%; padding:13px; border-radius:12px; border:none;
+    background: var(--text-primary); color:#fff; font-size:15px; font-weight:700;
+    cursor:pointer; margin-top:6px;
+  }
+  .btn:active { opacity:0.85; }
+  .btn.secondary { background: var(--surface-1); color:var(--text-primary); border:1px solid var(--border); }
+  .btn.good { background: var(--good); }
+  .err-msg { color: var(--critical); font-size:13px; margin-top:8px; min-height:16px; }
+  .ok-msg { color: var(--good); font-size:13px; margin-top:8px; min-height:16px; }
+
+  /* ---- Alta rápida de categoría ---- */
+  .field-inline { display:flex; gap:8px; }
+  .field-inline select { flex:1; }
+  .btn-icon {
+    width:44px; flex-shrink:0; border-radius:10px; border:1px solid var(--border);
+    background:var(--surface-1); font-size:20px; font-weight:700; line-height:1;
+    cursor:pointer; color:var(--text-primary);
+  }
+  .btn-icon:active { opacity:0.85; }
+  #nueva-categoria-box { margin-top:8px; background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:12px; }
+  #nueva-categoria-box input[type=text] {
+    width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--border);
+    font-size:15px; font-family:inherit; background:#fff; color:var(--text-primary); margin-bottom:10px;
+  }
+  .checkbox-inline { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary); margin-bottom:10px; }
+  .checkbox-inline input { width:auto; }
+  .row-btns { display:flex; gap:8px; }
+  .row-btns .btn { margin-top:0; }
+
+  /* ---- Proyección ---- */
+  .recur-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--border); }
+  .recur-row:last-child { border-bottom:none; }
+  .recur-row .nombre { font-weight:700; font-size:13px; }
+  .recur-row .cuando { font-size:12px; color:var(--muted); margin-top:2px; }
+  .recur-row .monto { font-weight:700; font-size:14px; color:var(--good); }
+  .cobro-row { padding:12px 0; border-bottom:1px solid var(--border); }
+  .cobro-row:last-child { border-bottom:none; }
+  .cobro-row .top { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .cobro-row .desc { font-weight:700; font-size:13px; }
+  .cobro-row .cuando { font-size:12px; color:var(--muted); margin-top:2px; }
+  .cobro-row .monto { font-weight:700; font-size:14px; white-space:nowrap; }
+  .cobro-row .acciones { display:flex; gap:14px; margin-top:8px; }
+  .cobro-row .link-btn { background:none; border:none; padding:0; font-size:12px; font-weight:700; cursor:pointer; text-decoration:underline; }
+  .cobro-row .link-btn.confirmar { color: var(--good); }
+  .cobro-row .link-btn.cancelar { color: var(--critical); }
+  .cobro-row .confirmar-box { display:flex; gap:8px; margin-top:8px; align-items:center; }
+  .cobro-row .confirmar-box input { flex:1; padding:9px 10px; border-radius:8px; border:1px solid var(--border); font-size:14px; font-family:inherit; }
+
+  /* ---- Movimientos ---- */
+  .mov-row { padding:12px 0; border-bottom:1px solid var(--border); }
+  .mov-row:last-child { border-bottom:none; }
+  .mov-row .top { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .mov-row .desc { font-weight:700; font-size:13px; }
+  .mov-row .meta { font-size:12px; color:var(--muted); margin-top:2px; }
+  .mov-row .monto { font-weight:700; font-size:14px; white-space:nowrap; }
+  .mov-row .monto.in { color: var(--good); }
+  .mov-row .monto.out { color: var(--critical); }
+  .mov-row .acciones { display:flex; gap:14px; margin-top:8px; }
+  .mov-row .link-btn { background:none; border:none; padding:0; font-size:12px; font-weight:700; cursor:pointer; text-decoration:underline; color:var(--text-primary); }
+  .mov-row .link-btn.eliminar { color: var(--critical); }
+  .mov-row .tag-transferencia { display:inline-block; font-size:10.5px; font-weight:700; color:#2a78d6; background:#eef1fb; border-radius:999px; padding:2px 8px; margin-top:4px; }
+  .mov-row .edit-box { margin-top:8px; display:flex; flex-direction:column; gap:8px; }
+  .mov-row .edit-box input, .mov-row .edit-box select { padding:9px 10px; border-radius:8px; border:1px solid var(--border); font-size:14px; font-family:inherit; }
+  .mov-row .confirmar-eliminar { margin-top:8px; display:flex; gap:8px; align-items:center; font-size:12.5px; color:var(--text-secondary); }
+  .mov-row .confirmar-eliminar button { width:auto; padding:8px 12px; margin-top:0; }
+
+  /* ---- Top summary bar ---- */
+  .topbar { padding: 16px 16px 10px; }
+  .topbar .greet { font-size:12px; color:var(--muted); display:flex; justify-content:space-between; align-items:center; }
+  .topbar .greet button { background:none; border:none; color:var(--muted); font-size:12px; text-decoration:underline; cursor:pointer; padding:0; }
+  .hero-mini { background: var(--surface-1); border:1px solid var(--border); border-radius:16px; padding:14px 16px; margin-top:8px; }
+  .hero-mini .label { font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; }
+  .hero-mini .value { font-size:28px; font-weight:700; margin-top:2px; }
+  .hero-mini.accent { background:#eef1fb; border-color:#2a78d6; }
+  .hero-mini.accent .value { color:#2a78d6; }
+  .mini-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+  .mini-tile { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .mini-tile .label { font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; }
+  .mini-tile .value { font-size:16px; font-weight:700; margin-top:2px; }
+  .mini-tile.neg .value { color: var(--critical); }
+
+  /* ---- Screens ---- */
+  .screen { display:none; padding: 4px 16px 20px; }
+  .screen.active { display:block; }
+  .page-title { font-size:20px; font-weight:700; margin: 10px 0 14px; }
+  .section-title { font-size:14px; font-weight:700; margin: 16px 0 8px; }
+
+  .card { background: var(--surface-1); border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:14px; }
+
+  .type-toggle { display:flex; gap:8px; margin-bottom:14px; }
+  .type-btn { flex:1; padding:12px 0; text-align:center; border-radius:12px; border:1px solid var(--border); background:var(--surface-1); font-weight:700; font-size:14px; color:var(--text-secondary); cursor:pointer; }
+  .type-btn.active-in { background: var(--good-bg); color:#0b5c0b; border-color: var(--good); }
+  .type-btn.active-out { background: var(--critical-bg); color:#7a2323; border-color: var(--critical); }
+  .type-btn.active-tr { background:#eef1fb; color:#2c3a86; border-color:#2a78d6; }
+
+  .mode-tabs { display:flex; gap:8px; margin-bottom:16px; }
+  .mode-tab { flex:1; text-align:center; padding:10px 0; border-radius:10px; font-weight:700; font-size:13px; cursor:pointer; border:1px solid var(--border); background:var(--surface-1); color:var(--text-secondary); }
+  .mode-tab.active { background: var(--text-primary); color:#fff; border-color:var(--text-primary); }
+
+  .filters { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; margin-bottom:14px; }
+  .chip { flex:none; border:1px solid var(--border); background:var(--surface-1); color:var(--text-secondary); font-size:12px; font-weight:700; padding:7px 14px; border-radius:999px; cursor:pointer; }
+  .chip.active { background: var(--text-primary); color:#fff; border-color:var(--text-primary); }
+
+  .row-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:14px; }
+  .row-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+  .tile { background: var(--surface-1); border:1px solid var(--border); border-radius:14px; padding:12px; }
+  .tile .label { font-size:10.5px; color:var(--muted); font-weight:700; text-transform:uppercase; }
+  .tile .value { font-size:17px; font-weight:700; margin-top:3px; }
+
+  .rank-row { margin-bottom:10px; }
+  .rank-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
+  .rank-head .cat { font-weight:600; }
+  .rank-head .amt { color:var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .rank-track { height:8px; background:var(--grid); border-radius:4px; overflow:hidden; }
+  .rank-fill { height:100%; border-radius:4px; }
+  .empty-note { font-size:13px; color:var(--muted); text-align:center; padding:20px 0; }
+
+  /* ---- Bottom nav ---- */
+  .bottomnav { position:fixed; bottom:0; left:0; right:0; background:var(--surface-1); border-top:1px solid var(--border); display:flex; max-width:480px; margin:0 auto; padding:8px 4px calc(10px + env(safe-area-inset-bottom)); }
+  .navbtn { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; background:none; border:none; font-family:inherit; color:var(--muted); font-size:11px; font-weight:700; cursor:pointer; padding:4px 0; }
+  .navbtn .ic { font-size:20px; }
+  .navbtn.active { color: var(--series-1); }
+
+  .toast { position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:var(--text-primary); color:#fff; padding:10px 18px; border-radius:999px; font-size:13px; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; z-index:50; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view">
+  <div class="login-card">
+    <h1>Flujo de Caja</h1>
+    <p>Inicia sesión para capturar y consultar tus dos cajas.</p>
+    <form id="login-form">
+      <div class="field"><label>Correo</label><input type="email" id="login-email" required></div>
+      <div class="field"><label>Contraseña</label><input type="password" id="login-password" required></div>
+      <button class="btn" type="submit">Entrar</button>
+      <div class="err-msg" id="login-error"></div>
+    </form>
+  </div>
+</div>
+
+<!-- APP -->
+<div class="wrap hide" id="app-view">
+  <div class="topbar">
+    <div class="greet"><span id="user-email"></span><button id="logout-btn">Salir</button></div>
+    <div class="hero-mini accent">
+      <div class="label">Efectivo total</div>
+      <div class="value" id="total-efectivo">—</div>
+    </div>
+    <div class="mini-row">
+      <div class="mini-tile" id="mini-caja-1"><div class="label">—</div><div class="value">—</div></div>
+      <div class="mini-tile" id="mini-caja-2"><div class="label">—</div><div class="value">—</div></div>
+    </div>
+  </div>
+
+  <!-- CAPTURA -->
+  <div class="screen active" id="s-captura">
+    <div class="page-title">Captura</div>
+    <div class="mode-tabs">
+      <div class="mode-tab active" id="tab-mov" onclick="setMode('mov')">Movimiento</div>
+      <div class="mode-tab" id="tab-tr" onclick="setMode('tr')">Transferencia</div>
+    </div>
+
+    <!-- Movimiento -->
+    <form class="card" id="mov-form">
+      <div class="type-toggle">
+        <div class="type-btn" id="btn-entrada" onclick="setTipo('Entrada')">↓ Entrada</div>
+        <div class="type-btn" id="btn-salida" onclick="setTipo('Salida')">↑ Salida</div>
+      </div>
+      <div class="field"><label>Fecha</label><input type="date" id="mov-fecha" required></div>
+      <div class="field"><label>Caja</label><select id="mov-caja" required></select></div>
+      <div class="field"><label>Monto</label><input type="number" id="mov-monto" inputmode="decimal" step="0.01" min="0.01" placeholder="0.00" required></div>
+      <div class="field">
+        <label>Categoría</label>
+        <div class="field-inline">
+          <select id="mov-categoria"></select>
+          <button type="button" class="btn-icon" id="btn-nueva-categoria" title="Agregar categoría">+</button>
+        </div>
+        <div class="hide" id="nueva-categoria-box">
+          <input type="text" id="nueva-categoria-nombre" placeholder="Nombre de la categoría nueva">
+          <label class="checkbox-inline"><input type="checkbox" id="nueva-categoria-ambos"> También disponible para <span id="nueva-categoria-opuesto"></span></label>
+          <div class="row-btns">
+            <button type="button" class="btn secondary" id="btn-cancelar-categoria">Cancelar</button>
+            <button type="button" class="btn good" id="btn-guardar-categoria">Guardar categoría</button>
+          </div>
+          <div class="err-msg" id="nueva-categoria-msg"></div>
+        </div>
+      </div>
+      <div class="field"><label>Proyecto/Concepto</label><input type="text" id="mov-concepto" placeholder="Ej. Nómina, Compras Melany..."></div>
+      <div class="field"><label>Descripción</label><input type="text" id="mov-descripcion" placeholder="Detalle del movimiento"></div>
+      <button class="btn good" type="submit">Guardar movimiento</button>
+      <div class="ok-msg" id="mov-msg"></div>
+    </form>
+
+    <!-- Transferencia -->
+    <form class="card hide" id="tr-form">
+      <div class="field"><label>Fecha</label><input type="date" id="tr-fecha" required></div>
+      <div class="field"><label>Caja origen (sale el dinero)</label><select id="tr-origen" required></select></div>
+      <div class="field"><label>Caja destino (entra el dinero)</label><select id="tr-destino" required></select></div>
+      <div class="field"><label>Monto</label><input type="number" id="tr-monto" inputmode="decimal" step="0.01" min="0.01" placeholder="0.00" required></div>
+      <div class="field"><label>Motivo</label><input type="text" id="tr-motivo" placeholder="Ej. Retiro de utilidades"></div>
+      <button class="btn" type="submit" style="background:#2a78d6">Guardar transferencia</button>
+      <div class="ok-msg" id="tr-msg"></div>
+    </form>
+  </div>
+
+  <!-- FLUJO -->
+  <div class="screen" id="s-flujo">
+    <div class="page-title">Flujo</div>
+    <div class="filters" id="flujo-periodo-filters">
+      <div class="chip active" data-periodo="mes">Este mes</div>
+      <div class="chip" data-periodo="mes_pasado">Mes pasado</div>
+      <div class="chip" data-periodo="todo">Todo</div>
+    </div>
+    <div class="filters" id="flujo-caja-filters">
+      <div class="chip active" data-caja="">Ambas cajas</div>
+    </div>
+
+    <div class="row-3">
+      <div class="tile"><div class="label">Entradas</div><div class="value" id="flujo-in">$0</div></div>
+      <div class="tile"><div class="label">Salidas</div><div class="value" id="flujo-out">$0</div></div>
+      <div class="tile"><div class="label">Flujo neto</div><div class="value" id="flujo-neto">$0</div></div>
+    </div>
+
+    <div class="section-title">¿De dónde viene el dinero?</div>
+    <div class="card" id="rank-in"></div>
+
+    <div class="section-title">¿A dónde se va el dinero?</div>
+    <div class="card" id="rank-out"></div>
+  </div>
+
+  <!-- PROYECCION -->
+  <div class="screen" id="s-proyeccion">
+    <div class="page-title">Proyección</div>
+    <div class="hero-mini accent">
+      <div class="label">Proyectado a 30 días</div>
+      <div class="value" id="proy-30">$0</div>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="tile"><div class="label">Saldo actual</div><div class="value" id="proy-saldo-actual">$0</div></div>
+      <div class="tile"><div class="label">Cobros esperados</div><div class="value" id="proy-cobros-esperados">$0</div></div>
+    </div>
+
+    <div class="section-title">Arrendamientos recurrentes</div>
+    <div class="card" id="proy-recurrentes"></div>
+
+    <div class="section-title">Cobros pendientes de reintegro</div>
+    <div class="card" id="proy-pendientes"></div>
+    <button class="btn secondary" type="button" id="btn-nuevo-cobro" style="margin-top:8px">+ Agregar cobro pendiente</button>
+
+    <form class="card hide" id="cobro-form" style="margin-top:10px">
+      <div class="field"><label>¿Qué pagaste / quién te debe reembolsar?</label><input type="text" id="cobro-descripcion" placeholder="Ej. Factura XACOLMEX evento verano"></div>
+      <div class="field"><label>Caja donde debe entrar</label><select id="cobro-caja"></select></div>
+      <div class="field"><label>Categoría (opcional)</label><select id="cobro-categoria"></select></div>
+      <div class="field"><label>Monto esperado</label><input type="number" id="cobro-monto" inputmode="decimal" step="0.01" min="0.01" placeholder="0.00"></div>
+      <div class="field"><label>Fecha en que pagaste</label><input type="date" id="cobro-fecha-pago"></div>
+      <div class="field"><label>Fecha esperada de cobro (si la sabes)</label><input type="date" id="cobro-fecha-esperada"></div>
+      <div class="row-btns">
+        <button type="button" class="btn secondary" id="btn-cancelar-cobro">Cancelar</button>
+        <button class="btn good" type="submit">Guardar cobro pendiente</button>
+      </div>
+      <div class="err-msg" id="cobro-msg"></div>
+    </form>
+  </div>
+
+  <!-- MOVIMIENTOS -->
+  <div class="screen" id="s-movimientos">
+    <div class="page-title">Movimientos</div>
+    <div class="filters" id="mov-list-periodo-filters">
+      <div class="chip active" data-periodo="mes">Este mes</div>
+      <div class="chip" data-periodo="mes_pasado">Mes pasado</div>
+      <div class="chip" data-periodo="todo">Todo</div>
+    </div>
+    <div class="filters" id="mov-list-tipo-filters">
+      <div class="chip active" data-tipo="">Todos</div>
+      <div class="chip" data-tipo="Entrada">Entradas</div>
+      <div class="chip" data-tipo="Salida">Salidas</div>
+    </div>
+    <div class="filters" id="mov-list-caja-filters">
+      <div class="chip active" data-caja="">Ambas cajas</div>
+    </div>
+
+    <div class="card" id="mov-list"></div>
+  </div>
+
+  <div class="bottomnav">
+    <button class="navbtn active" onclick="showScreen('captura', this)"><span class="ic">✏️</span>Captura</button>
+    <button class="navbtn" onclick="showScreen('flujo', this)"><span class="ic">📊</span>Flujo</button>
+    <button class="navbtn" onclick="showScreen('proyeccion', this)"><span class="ic">📈</span>Proyección</button>
+    <button class="navbtn" onclick="showScreen('movimientos', this)"><span class="ic">📋</span>Movimientos</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
